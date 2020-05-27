@@ -7,6 +7,7 @@ const CREATE_FIELDS = [
   'keyId',
   'validPrincipals',
   'certType',
+  'signAlgo',
   'criticalOptions',
   'extension',
   'ttl',
@@ -27,6 +28,11 @@ export default DS.Model.extend({
     editType: 'ttl',
   }),
   validPrincipals: attr('string'),
+  signAlgo: attr('string', {
+    defaultValue: '',
+    label: 'Signing Algorithm',
+    possibleValues: ['', 'ssh-rsa', 'rsa-sha2-256', 'rsa-sha2-512'],
+  }),
   certType: attr('string', {
     defaultValue: 'user',
     label: 'Certificate Type',

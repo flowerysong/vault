@@ -53,6 +53,8 @@ type sshRole struct {
 	AllowUserKeyIDs        bool              `mapstructure:"allow_user_key_ids" json:"allow_user_key_ids"`
 	KeyIDFormat            string            `mapstructure:"key_id_format" json:"key_id_format"`
 	AllowedUserKeyLengths  map[string]int    `mapstructure:"allowed_user_key_lengths" json:"allowed_user_key_lengths"`
+	AllowedAlgorithms      string            `mapstructure:"allowed_algorithms" json:"allowed_algorithms"`
+	DefaultAlgorithm       string            `mapstructure:"default_algorithm" json:"default_algorithm"`
 }
 
 func pathListRoles(b *backend) *framework.Path {
@@ -331,6 +333,22 @@ func pathRoles(b *backend) *framework.Path {
                                 If set, allows the enforcement of key types and minimum key sizes to be signed.
                                 `,
 			},
+			"allowed_algorithms": &framework.FieldSchema{
+				Type: framework.TypeString,
+				Description: `
+				[Not applicable for Dynamic type] [Not applicable for OTP type] [Optional for CA type]
+				If this option is not specified, a client can request a signed certificate with any
+				supported signing algorithm.
+                                Otherwise, only the listed algorithms can be requested.
+				`,
+			},
+			"default_algorithm": &framework.FieldSchema{
+				Type: framework.TypeString,
+				Description: `
+				[Not applicable for Dynamic type] [Not applicable for OTP type] [Optional for CA type]
+				Default algorithm to use when signing certificates for this role.
+				`,
+			},
 		},
 
 		Callbacks: map[logical.Operation]framework.OperationFunc{
@@ -489,6 +507,11 @@ func (b *backend) pathRoleWrite(ctx context.Context, req *logical.Request, d *fr
 func (b *backend) createCARole(allowedUsers, defaultUser string, data *framework.FieldData) (*sshRole, *logical.Response) {
 	ttl := time.Duration(data.Get("ttl").(int)) * time.Second
 	maxTTL := time.Duration(data.Get("max_ttl").(int)) * time.Second
+	defaultAlgorithm := data.Get("default_algorithm").(string)
+	if defaultAlgorithm == "" {
+		defaultAlgorithm = "rsa-sha2-256"
+	}
+
 	role := &sshRole{
 		AllowedCriticalOptions: data.Get("allowed_critical_options").(string),
 		AllowedExtensions:      data.Get("allowed_extensions").(string),
@@ -497,6 +520,8 @@ func (b *backend) createCARole(allowedUsers, defaultUser string, data *framework
 		AllowedUsers:           allowedUsers,
 		AllowedUsersTemplate:   data.Get("allowed_users_template").(bool),
 		AllowedDomains:         data.Get("allowed_domains").(string),
+		AllowedAlgorithms:      data.Get("allowed_algorithms").(string),
+		DefaultAlgorithm:       defaultAlgorithm,
 		DefaultUser:            defaultUser,
 		AllowBareDomains:       data.Get("allow_bare_domains").(bool),
 		AllowSubdomains:        data.Get("allow_subdomains").(bool),
@@ -594,6 +619,8 @@ func (b *backend) parseRole(role *sshRole) (map[string]interface{}, error) {
 			"default_critical_options": role.DefaultCriticalOptions,
 			"default_extensions":       role.DefaultExtensions,
 			"allowed_user_key_lengths": role.AllowedUserKeyLengths,
+			"allowed_algorithms":       role.AllowedAlgorithms,
+			"default_algorithm":        role.DefaultAlgorithm,
 		}
 	case KeyTypeDynamic:
 		result = map[string]interface{}{

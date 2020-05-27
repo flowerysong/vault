@@ -26,15 +26,22 @@ import (
 )
 
 type creationBundle struct {
-	KeyID           string
-	ValidPrincipals []string
-	PublicKey       ssh.PublicKey
-	CertificateType uint32
-	TTL             time.Duration
-	Signer          ssh.Signer
-	Role            *sshRole
-	CriticalOptions map[string]string
-	Extensions      map[string]string
+	KeyID                string
+	ValidPrincipals      []string
+	PublicKey            ssh.PublicKey
+	CertificateType      uint32
+	SigningAlgorithm     string
+	TTL                  time.Duration
+	Signer               ssh.Signer
+	Role                 *sshRole
+	CriticalOptions      map[string]string
+	Extensions           map[string]string
+}
+
+var supportedAlgorithms = []string{
+	"ssh-rsa",
+	"rsa-sha2-256",
+	"rsa-sha2-512",
 }
 
 func pathSign(b *backend) *framework.Path {
@@ -70,6 +77,10 @@ be later than the role max TTL.`,
 				Type:        framework.TypeString,
 				Description: `Type of certificate to be created; either "user" or "host".`,
 				Default:     "user",
+			},
+			"sign_algo": &framework.FieldSchema{
+				Type:        framework.TypeString,
+				Description: `Signing algorithm that should be used for the certificate.`,
 			},
 			"key_id": &framework.FieldSchema{
 				Type:        framework.TypeString,
@@ -133,6 +144,11 @@ func (b *backend) pathSignCertificate(ctx context.Context, req *logical.Request,
 		return logical.ErrorResponse(err.Error()), nil
 	}
 
+	signingAlgorithm, err := b.calculateSigningAlgorithm(data, role)
+	if err != nil {
+		return logical.ErrorResponse(err.Error()), nil
+	}
+
 	var parsedPrincipals []string
 	if certificateType == ssh.HostCert {
 		parsedPrincipals, err = b.calculateValidPrincipals(data, req, role, "", role.AllowedDomains, validateValidPrincipalForHosts(role))
@@ -175,15 +191,16 @@ func (b *backend) pathSignCertificate(ctx context.Context, req *logical.Request,
 	}
 
 	cBundle := creationBundle{
-		KeyID:           keyID,
-		PublicKey:       userPublicKey,
-		Signer:          signer,
-		ValidPrincipals: parsedPrincipals,
-		TTL:             ttl,
-		CertificateType: certificateType,
-		Role:            role,
-		CriticalOptions: criticalOptions,
-		Extensions:      extensions,
+		KeyID:            keyID,
+		PublicKey:        userPublicKey,
+		Signer:           signer,
+		ValidPrincipals:  parsedPrincipals,
+		TTL:              ttl,
+		CertificateType:  certificateType,
+		SigningAlgorithm: signingAlgorithm,
+		Role:             role,
+		CriticalOptions:  criticalOptions,
+		Extensions:       extensions,
 	}
 
 	certificate, err := cBundle.sign()
@@ -301,6 +318,36 @@ func (b *backend) calculateCertificateType(data *framework.FieldData, role *sshR
 	}
 
 	return certificateType, nil
+}
+
+func (b *backend) calculateSigningAlgorithm(data *framework.FieldData, role *sshRole) (string, error) {
+	requestedAlgorithm := ""
+
+	requestedAlgorithmRaw, ok := data.GetOk("sign_algo")
+	if ok {
+		requestedAlgorithm = requestedAlgorithmRaw.(string)
+	} else {
+		requestedAlgorithm = role.DefaultAlgorithm
+	}
+
+	if requestedAlgorithm == "" {
+		requestedAlgorithm = "ssh-rsa"
+	}
+
+	requestedAlgorithm = strings.ToLower(requestedAlgorithm)
+
+	if role.AllowedAlgorithms != "" {
+		parsedAlgorithms := strutil.RemoveDuplicates(strutil.ParseStringSlice(role.AllowedAlgorithms, ","), false)
+		if !strutil.StrListContains(parsedAlgorithms, requestedAlgorithm) {
+			return "", fmt.Errorf("%v is not an allowed signing algorithm for this role", requestedAlgorithm)
+		}
+	}
+
+	if !strutil.StrListContains(supportedAlgorithms, requestedAlgorithm) {
+		return "", fmt.Errorf("%v is not supported as a signing algorithm", requestedAlgorithm)
+	}
+
+	return requestedAlgorithm, nil
 }
 
 func (b *backend) calculateKeyID(data *framework.FieldData, req *logical.Request, role *sshRole, pubKey ssh.PublicKey) (string, error) {
@@ -527,8 +574,7 @@ func (b *creationBundle) sign() (retCert *ssh.Certificate, retErr error) {
 	out := c2.Marshal()
 	certificateBytes := out[:len(out)-4]
 
-	// sign with rsa-sha2-256
-	sig, err := sshAlgorithmSigner.SignWithAlgorithm(rand.Reader, certificateBytes, ssh.SigAlgoRSASHA2256)
+	sig, err := sshAlgorithmSigner.SignWithAlgorithm(rand.Reader, certificateBytes, b.SigningAlgorithm)
 	if err != nil {
 		return nil, fmt.Errorf("failed to generate signed SSH key")
 	}
